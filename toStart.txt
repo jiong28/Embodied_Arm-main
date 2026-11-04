@@ -1,0 +1,12 @@
+# ① 开终端（VSCode 里新开一个，或 Win 键搜 Anaconda Prompt）
+# ② 激活环境 —— 看到提示符前面出现 (embodied_arm) 才算成功
+conda activate embodied_arm
+
+# ③ 进项目目录并启动
+普通启动：
+cd G:\WL\Embodied_Arm\Project\Embodied_Arm-main
+python horizon_gui.py
+
+热启动：
+cd G:\WL\Embodied_Arm\Project\Embodied_Arm-main
+python gui/dev_launcher.py

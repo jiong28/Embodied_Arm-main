@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "mimo-image-recognition": {
+      "command": "D:\\anaconda3\\Scripts\\mimo-image-recognition-mcp.exe",
+      "args": [],
+      "env": {
+        "MIMO_API_KEY": "tp-ciz7dh76pzdy3ah15aiwdns0n3mdff8phfmq4xab0q98tpfw",
+        "MIMO_API_BASE": "https://token-plan-cn.xiaomimimo.com/v1",
+        "MIMO_MODEL": "mimo-v2.5"
+      }
+    }
+  }
+}

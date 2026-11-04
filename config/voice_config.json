@@ -1,0 +1,16 @@
+{
+    "asr_model": "paraformer-realtime-v2",
+    "tts_model": "cosyvoice-v1",
+    "tts_voice": "longxiaochun",
+    "edge_voice": "zh-CN-YunyangNeural",
+    "tts_sample_rate": 48000,
+    "sample_rate": 16000,
+    "chunk_size": 1024,
+    "silence_threshold": 300,
+    "silence_duration": 0.8,
+    "max_record_duration": 15,
+    "stop_keywords": ["停止", "结束", "退出", "关闭", "再见"],
+    "wake_word": "贾维斯",
+    "idle_timeout": 30,
+    "llm_system_prompt": "你是贾维斯，一个智能机械臂助手。回答简洁精炼，但要具体：描述物体时必须说出具体名称（如药品名、品牌、颜色等），不要笼统概括。执行动作时直接确认。"
+}

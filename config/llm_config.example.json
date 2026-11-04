@@ -1,0 +1,7 @@
+{
+    "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-在这里填你自己的阿里云百炼 API Key",
+    "model": "qwen-vl-plus",
+    "max_tokens": 2048,
+    "temperature": 0.1
+}
