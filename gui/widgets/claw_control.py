@@ -79,7 +79,7 @@ class ClawControl(QWidget):
 
         # 闭合角度输入
         angle_layout = QHBoxLayout()
-        angle_layout.addWidget(QLabel("闭合角度222:"))
+        angle_layout.addWidget(QLabel("闭合角度:"))
         self.angle_input = QLineEdit(str(self._close_angle))
         self.angle_input.setFixedWidth(60)
         self.angle_input.setAlignment(Qt.AlignCenter)

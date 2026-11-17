@@ -3,12 +3,15 @@ from PyQt5.QtWidgets import (
     QComboBox, QCheckBox, QFrame, QApplication
 )
 from PyQt5.QtCore import pyqtSignal, Qt
+from can import logger
 
 from gui.core.motor_manager import MotorManager
 from gui.widgets.motor_status_table import MotorStatusTable
 from gui.widgets.position_control import PositionControl
 from gui.widgets.sync_control import SyncControl
 from gui.widgets.claw_control import ClawControl
+import logging
+logger = logging.getLogger(__name__)
 
 
 class MotorPanel(QWidget):
@@ -31,11 +34,12 @@ class MotorPanel(QWidget):
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
 
-        self.status_table = MotorStatusTable(self.motor_manager)
+        # 关节状态监控
+        self.status_table = MotorStatusTable(self.motor_manager) 
         layout.addWidget(self.status_table)
 
         control_layout = QHBoxLayout()
-
+        #位置微调（关节端角度）
         self.position_control = PositionControl(self.motor_manager)
         self.position_control.log_message.connect(self.log_message)
         self.position_control.btn_refresh.clicked.connect(self._on_refresh_status)
@@ -43,6 +47,7 @@ class MotorPanel(QWidget):
 
         right_panel = QVBoxLayout()
 
+        #批量操作
         batch_group = QGroupBox("批量操作")
         batch_layout = QVBoxLayout()
         self.btn_enable_all = QPushButton("全部使能")
@@ -58,11 +63,11 @@ class MotorPanel(QWidget):
         batch_layout.addWidget(self.btn_disable_all)
         batch_group.setLayout(batch_layout)
         right_panel.addWidget(batch_group)
-
+        #多机同步控制
         self.sync_control = SyncControl(self.motor_manager)
         self.sync_control.log_message.connect(self.log_message)
         right_panel.addWidget(self.sync_control)
-
+        #夹爪控制
         self.claw_control = ClawControl()
         self.claw_control.log_message.connect(self.log_message)
         right_panel.addWidget(self.claw_control)
@@ -82,7 +87,7 @@ class MotorPanel(QWidget):
         layout.addWidget(QLabel("端口:"))
         self.port_combo = QComboBox()
         self.port_combo.setEditable(True)
-        self.port_combo.addItems(["COM5", "COM3", "COM4", "COM6", "COM7", "COM8"])
+        self.port_combo.addItems([ "COM3", "COM4", "COM5","COM6", "COM7", "COM8"])
         self.port_combo.setFixedWidth(100)
         layout.addWidget(self.port_combo)
 
@@ -136,11 +141,12 @@ class MotorPanel(QWidget):
 
         if result["success"]:
             self.set_motor_ids(result["success"])
-            self.start_monitoring()
+            #self.start_monitoring()  #关节状态监控
             self.log_message.emit("info", f"连接成功: 关节 {result['success']}")
             self.status_changed.emit(f"已连接 {len(result['success'])} 个关节: {result['success']}")
             self.btn_connect.setEnabled(False)
             self.btn_disconnect.setEnabled(True)
+            logger.info(f"self.motor_checks.values:{self.motor_checks.values()}")
             for cb in self.motor_checks.values():
                 cb.setEnabled(False)
             self.port_combo.setEnabled(False)

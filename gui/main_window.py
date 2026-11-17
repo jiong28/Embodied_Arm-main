@@ -69,7 +69,7 @@ class MainWindow(QMainWindow):
         separator2.setFrameShape(QFrame.HLine)
         separator2.setFrameShadow(QFrame.Sunken)
         main_layout.addWidget(separator2)
-
+        #操作日志
         self.log_widget = LogWidget()
         main_layout.addWidget(self.log_widget, stretch=0)
 

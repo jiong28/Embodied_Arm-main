@@ -98,8 +98,10 @@
       "claw_angles": [
         0.0,
         65.0
-      ]
-    }
+      ],
+      "grasp_depth": 265.0
+    },
+    "auto_pose_convention_fix": true
   },
   "embodied_intelligence": {
     "grasp_params": {

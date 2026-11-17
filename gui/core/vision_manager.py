@@ -190,6 +190,13 @@ class VisionManager:
     def is_initialized(self) -> bool:
         return self._initialized
 
+    @property
+    def last_error(self) -> Optional[str]:
+        """最近一次抓取失败的原因（来自 VisualGraspSDK.last_error），供界面展示"""
+        if self._vision_sdk is None:
+            return None
+        return getattr(self._vision_sdk, "last_error", None)
+
     def init_sdk(self, camera_id: int = 0) -> bool:
         """初始化视觉抓取 SDK，绑定电机。电机未连接时也可初始化（仅坐标计算）。"""
         try:
@@ -239,17 +246,23 @@ class VisionManager:
 
             ea = gp.get("euler_angles", [0, 0, 180])
             tcp = gp.get("tcp_offset", [-15, 25, 85])
+            depth = gp.get(
+                "grasp_depth",
+                cfg.get("vision_grasp", {}).get("camera", {}).get("fixed_depth_value", 300.0),
+            )
 
             self._grasp_params = {
                 "yaw": ea[0], "pitch": ea[1], "roll": ea[2],
                 "tcp_offset_x": tcp[0], "tcp_offset_y": tcp[1], "tcp_offset_z": tcp[2],
+                "grasp_depth": float(depth),
                 "motion_speed": gp.get("motion_speed", 500),
                 "motion_acceleration": gp.get("motion_acceleration", 300),
             }
 
             if self._vision_sdk:
                 self._vision_sdk.set_grasp_params(**self._grasp_params)
-            logger.info(f"抓取参数已加载: euler={ea}, tcp={tcp}, speed={self._grasp_params['motion_speed']}")
+            logger.info(f"抓取参数已加载: euler={ea}, tcp={tcp}, depth={depth}, "
+                        f"speed={self._grasp_params['motion_speed']}")
 
         except Exception as e:
             logger.warning(f"加载抓取参数失败: {e}")
@@ -295,8 +308,16 @@ class VisionManager:
                 return None
 
             calib = None
-            if hasattr(embodied_internal, "_load_calibration_params"):
-                calib = embodied_internal._load_calibration_params()
+            # 优先使用编译模块自带的 getter（旧代码探测的 _load_calibration_params 实际不存在）
+            for attr in ("_get_calibration_params", "_load_calibration_params"):
+                fn = getattr(embodied_internal, attr, None)
+                if callable(fn):
+                    try:
+                        calib = fn()
+                    except Exception:
+                        calib = None
+                    if calib:
+                        break
             if not calib:
                 calib = self._load_calibration_fallback()
             if not calib:
@@ -316,10 +337,16 @@ class VisionManager:
                 logger.error("像素坐标转换失败")
                 return None
 
+            # 打印换算原始值：以前直接钳制，把 -795mm 这类异常值掩盖了
+            print(f" [PixelInfo] 原始换算 world={world}, pose={current_pose}")
+
             x_w, y_w, z_w = world
             min_z = float(grasp.get("min_z", 30.0))
             max_z = float(grasp.get("max_z", 600.0))
-            z_w = max(min_z, min(max_z, float(z_w)))
+            z_clamped = max(min_z, min(max_z, float(z_w)))
+            if abs(z_clamped - float(z_w)) > 1e-6:
+                print(f" [PixelInfo] ⚠️ z={z_w:.1f}mm 超出 [{min_z},{max_z}]，已钳制为 {z_clamped:.1f}mm（换算本身可疑）")
+            z_w = z_clamped
 
             yaw = grasp.get("yaw", self._grasp_params.get("yaw", 0.0))
             pitch = grasp.get("pitch", self._grasp_params.get("pitch", 0.0))

@@ -3,7 +3,7 @@ import time
 
 import serial
 
-
+#important
 class ClawController:
     """夹爪舵机控制器 — 通过串口与 ESP32 (claw.ino) 通信"""
 
@@ -29,7 +29,7 @@ class ClawController:
     @property
     def is_connected(self) -> bool:
         return self._serial is not None and self._serial.is_open
-
+    #important
     def set_angle(self, angle: float) -> bool:
         """
         设置夹爪角度 (用户视角: 0=完全闭合, 90=完全张开)

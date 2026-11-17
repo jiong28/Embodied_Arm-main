@@ -61,6 +61,7 @@ class ClickableLabel(QLabel):
             self.update()
             self.clicked.emit(event.x(), event.y())
 
+# important Qt的事件回调，首次显示、被遮挡后露出、缩放窗口、更新时会回调
     def paintEvent(self, event):
         super().paintEvent(event)
         painter = QPainter(self)
@@ -949,7 +950,7 @@ class CameraPanel(QWidget):
         self.log_message.emit("info", f"已选择像素: ({u:.0f}, {v:.0f})")
 
     # ---- 获取位置 ----
-
+#important
     def _on_get_position(self):
         if self._click_pixel is None:
             QMessageBox.warning(self, "提示", "请先在画面上点击目标位置")
@@ -1031,7 +1032,11 @@ class CameraPanel(QWidget):
                 self.log_message.emit("info", "抓取完成（仅6关节运动，夹爪不动）")
                 self._speak_if_voice("好的，抓取完成")
         else:
-            self.log_message.emit("error", "抓取失败")
+            reason = None
+            if self._vision_manager is not None:
+                reason = getattr(self._vision_manager, "last_error", None)
+            msg = f"抓取失败: {reason}" if reason else "抓取失败"
+            self.log_message.emit("error", msg)
             self._speak_if_voice("抓取失败")
 
     def _auto_return_photo(self):
@@ -1337,7 +1342,7 @@ class CameraPanel(QWidget):
             return
         try:
             self._motor_manager.go_to_custom_zero_sequential(
-                speed=self._get_speed(), last_joint=5, extra_offsets={5: 90.0}
+                speed=self._get_speed(), last_joint=5, extra_offsets={5: 0.0}   #？？？为什么要设置关节5额外偏移度
             )
             self.log_message.emit("info", "运动到拍照位置: 先动其他关节，最后动关节5")
         except Exception as e:
@@ -2534,7 +2539,10 @@ class CameraPanel(QWidget):
         self.log_message.emit("error", f"语音错误: {msg}")
 
     # ---- 坐标映射 ----
-
+    #important  在预览窗口上点的那个位置，对应相机原始画面里的哪个像素
+    #三层坐标：label:Qt 界面控件的大小，鼠标点击时 event.x()/y() 给的是这个
+    #           pixmap:显示用的额缩放图，且居中放在label里-四周可能有留白
+    #           frame：相机原始帧（self._frame的numpy数组），标定参数对应的坐标系
     def _label_to_frame_coords(self, label_x, label_y):
         if self._frame is None:
             return None, None

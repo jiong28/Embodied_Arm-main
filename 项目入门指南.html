@@ -75,7 +75,7 @@
 <header>
   <h1>HorizonArm 项目入门指南</h1>
   <p class="sub">给零机械臂基础的人：这个项目是什么、由什么组成、要补哪些知识、按什么顺序上手。</p>
-  <p class="meta">基于 <code>G:\WL\Embodied_Arm\Project\Embodied_Arm-main</code> 源码整理 · 2026-10-26</p>
+  <p class="meta">基于 <code>G:\WL\Embodied_Arm\Project\Embodied_Arm-main</code> 源码整理 · 2026-10-26 · <b>知识地图 2026-11-06 更新</b>（结合真机调试实践与具身智能市场现状）</p>
 </header>
 
 <h2><span class="num">01</span>一句话认识它</h2>
@@ -174,46 +174,71 @@
   <tr><td><code>README_CN.txt</code></td><td>—</td><td>⚠️ 文件放错了，内容是另一个项目（PPT Master）的说明，与本项目无关，忽略</td></tr>
 </table>
 
-<h2><span class="num">05</span>要补哪些知识（按优先级分三档）</h2>
+<h2><span class="num">05</span>知识地图 v2（结合真机实践与市场需求更新）</h2>
 
-<div class="grid g3" style="margin-top:14px">
-  <div class="card" style="border-top:3px solid #3b6d11">
-    <b style="font-size:14px">必学 · 第一周</b>
+<p class="lead">初版按"项目结构"分了三档。真机跑过一轮后（视觉抓取连续失败、零点全 0、LLM 404），实际卡人的地方和预想不一样——<b>卡人的不是运动学理论，而是标定数据和调试能力</b>。市场端（具身智能/机器人方向招聘）也有明确信号：感知-标定-控制闭环能力和数据链路能力最值钱，纯算法理论其次。据此重排为五档：</p>
+
+<div class="grid g2" style="margin-top:14px">
+  <div class="card" style="border-top:3px solid #185fa5">
+    <b style="font-size:14px">第 0 档 · 工程基本功（立刻学，天天用）</b>
+    <p style="font-size:12.5px;color:var(--ink3);margin:4px 0 8px">真机调试暴露的事实：80% 的时间在定位问题而非写代码。</p>
     <ul class="plain">
-      <li><b>Python 面向对象</b>：类与实例、继承、模块导入</li>
-      <li><b>异常处理 / 线程</b>：界面不卡靠子线程（QThread + 信号槽）</li>
-      <li><b>关节 vs 末端</b>：6 个关节角决定手在哪，这就是"自由度"</li>
-      <li><b>角度单位</b>：界面用"度"，底层算"弧度"</li>
-      <li><b>电机三件套</b>：使能 / 失能 / 位置模式，闭环控制是什么</li>
-      <li><b>CAN 总线 + 串口</b>：什么叫 COM5、波特率 500k、设备 ID</li>
+      <li><b>VSCode 断点调试</b>：断点 / Call Stack 看调用链 / Variables 看状态 / Debug Console 现场执行——GUI 程序唯一高效的排查方式</li>
+      <li><b>logging 规范</b>：print 只到控制台，错误会被吞掉（本项目 visual_grasp.py 的教训）；学会把诊断信息接到日志系统</li>
+      <li><b>Git 版本管理</b>：改坏能回滚；commit 前检查敏感信息（API key 泄露是真实风险）</li>
+      <li><b>conda 虚拟环境</b>：一个项目一个环境，出问题先查"是不是环境错了"</li>
+    </ul>
+  </div>
+  <div class="card" style="border-top:3px solid #3b6d11">
+    <b style="font-size:14px">第 1 档 · 必学基础（第一周，无硬件也能学）</b>
+    <ul class="plain">
+      <li><b>Python 面向对象 + 线程</b>：类与继承、QThread + 信号槽（界面不卡的关键）</li>
+      <li><b>关节 vs 末端 / 自由度</b>：6 个关节角决定手在哪</li>
+      <li><b>角度单位与换算</b>：度 ↔ 弧度、减速比、方向系数（<code>关节角 = 编码器角 × 方向 / 减速比</code>）</li>
+      <li><b>电机三态</b>：使能 / 失能 / 停止的区别（使能=通电锁住，停止=使能中暂停，失能=断电松开）</li>
+      <li><b>CAN 总线 + 串口</b>：COM 口、波特率 500k、设备 ID、串口被占用的排查</li>
+    </ul>
+  </div>
+  <div class="card" style="border-top:3px solid #a32d2d">
+    <b style="font-size:14px">第 2 档 · 核心深挖（决定抓取能否成功，最重要）</b>
+    <p style="font-size:12.5px;color:var(--ink3);margin:4px 0 8px">真机抓取失败的全部根因都在这一档，而不在 IK 算法里。</p>
+    <ul class="plain">
+      <li><b>坐标系与零点标定 ★最高优先</b>：机械零位、编码器零点、custom_zero 机制；零点错了 IK 解会整体偏 90°（真机实测）</li>
+      <li><b>位姿与坐标变换</b>：xyz + 欧拉角、旋转矩阵、基座系/末端系/相机系怎么串（手眼矩阵 RT_camera2end）</li>
+      <li><b>相机内参与手眼标定</b>：像素 → 毫米的投影几何，标定参数存在 calibration_parameter.json</li>
+      <li><b>IK 的"输入输出契约"</b>：不学内部算法，但要摸清——目标坐标系、关节限位（如关节 2 是 0°~90°）、可达空间边界（离基座太近/太远都会无解）、失败时的返回行为</li>
+      <li><b>MuJoCo 仿真</b>：DigitalTwinSDK 无硬件验证算法（reachability 实验就在仿真里做）</li>
+      <li><b>YOLO / ONNX 推理</b>：检测框 + 置信度 + conf 阈值的取舍</li>
     </ul>
   </div>
   <div class="card" style="border-top:3px solid #854f0b">
-    <b style="font-size:14px">用到再学 · 第二三周</b>
+    <b style="font-size:14px">第 3 档 · 市场加分项（按职业方向选投）</b>
+    <p style="font-size:12.5px;color:var(--ink3);margin:4px 0 8px">2026 具身智能招聘热点：VLA 模型、模仿学习、遥操作数据采集、sim2real。前两个方向都建立在本项目这套"感知-标定-控制"底座上。</p>
     <ul class="plain">
-      <li><b>DH 参数</b>：用 4 个数字描述一节机械臂的几何关系</li>
-      <li><b>正/逆运动学</b>：关节角 → 手的位置（正）；想去某处 → 各关节该多少（逆）</li>
-      <li><b>位姿与坐标系</b>：xyz + 姿态角，变换矩阵怎么串起来</li>
-      <li><b>相机内参与手眼标定</b>：像素坐标怎么换算成机械臂能走的三维坐标</li>
-      <li><b>YOLO 目标检测</b>：框出物体 + 置信度</li>
-      <li><b>MuJoCo / URDF</b>：仿真模型怎么描述</li>
-      <li><b>PyQt5</b>：信号槽、QTimer 刷新</li>
+      <li><b>ROS2</b>：机器人行业标准中间件，换任何真机平台都用得上（市场刚需第一名）</li>
+      <li><b>PyTorch + 模仿学习</b>：teleoperation 采数据 → behavior cloning，是本项目 Joy-Con 遥操能力的自然延伸</li>
+      <li><b>VLA 模型生态</b>：OpenVLA、π0、LeRobot——本项目"自然语言→动作"链路的工业级版本，理解其数据格式即可起步</li>
+      <li><b>Isaac Sim / 更强的仿真</b>：MuJoCo 之上的工业级选项，合成的标定数据可以反哺真机</li>
+      <li><b>大模型 API 工程</b>：本项目 LLM 404 就是这类问题——模型名、endpoint、key 权限的匹配排查</li>
     </ul>
-  </div>
-  <div class="card" style="border-top:3px solid #5f5e5a">
-    <b style="font-size:14px">可以先跳过</b>
-    <ul class="plain">
-      <li>RRT 路径规划（避障用，内核已实现）</li>
-      <li>深度估计（DepthEstimationSDK）</li>
-      <li>层级决策系统内部逻辑</li>
-      <li>STM32 / 电机固件层协议</li>
-      <li>PID 参数整定（除非要自己调电机手感）</li>
-    </ul>
-    <p style="font-size:12.5px;color:var(--ink3);margin-top:10px">这些都在 .pyd 里跑，你调用即可，读不到也改不了。</p>
   </div>
 </div>
 
-<h2><span class="num">06</span>五步上手路线</h2>
+<div class="card" style="margin-top:12px;border-top:3px solid #5f5e5a">
+  <b style="font-size:14px">第 4 档 · 明确跳过（黑盒内部，投入产出比为零）</b>
+  <ul class="plain">
+    <li><b>IK 求解器内部实现</b>（数值迭代/解析解推导）——封装在 Horizon_Core 里，看不到也改不了；需要自定义时绕开它用 numpy 自己写数值 IK</li>
+    <li>RRT 路径规划、深度估计、层级决策内部逻辑——同在 .pyd 黑盒里</li>
+    <li>STM32 / 电机固件层协议、PID 参数整定——除非转嵌入式方向</li>
+  </ul>
+  <p style="font-size:12.5px;color:var(--ink3);margin-top:8px">对黑盒的正确姿势：<b>做它的熟练用户，不做它的逆向工程师</b>。用仿真做可达性实验摸清它的"脾气"（可达范围、失败方式、姿态偏好），比研究内部算法有用得多。</p>
+</div>
+
+<div class="note" style="margin-top:16px">
+  <p><b>为什么这么排（来自真机实践的三个证据）：</b>① 视觉抓取 4 连败，根因是零点全 0 + 目标点离基座仅 155mm——全在第 2 档知识里；② IK 解出的错误角度恰好都偏 90° 左右，是坐标系错位的典型特征，验证"坐标变换比 IK 算法重要"；③ 调试时失败原因被 print 吞掉、GUI 日志看不到，浪费了一整轮排查——第 0 档的 logging 和断点调试本可以省掉。</p>
+</div>
+
+<h2><span class="num">06</span>上手路线（六步）</h2>
 <div class="card">
 
   <div class="step">
@@ -266,12 +291,25 @@ python horizon_gui.py</pre>
   <div class="step">
     <div class="step-n">5</div>
     <div class="step-body">
-      <b>按兴趣挑一个方向深入（持续）</b>
-      <div class="goal">三条路，各自有对应的教学示例：</div>
+      <b>做一次完整标定（半天 · 需要真机，抓取成功的前提）</b>
+      <div class="goal">真机实践证明：不标定，一切上层功能（视觉抓取、自然语言抓取）都会以"无效解"失败。</div>
       <ul class="plain">
-        <li><b>视觉抓取</b>：<code>example/control_sdk_examples/visual_grasp_example.py</code> → 读 <code>Embodied_SDK/visual_grasp.py</code>（854 行，最厚的 SDK 模块）</li>
-        <li><b>手柄遥操</b>：<code>joycon_control_example.py</code> → 读 <code>joycon.py</code></li>
-        <li><b>AI / 语音</b>：<code>example/ai_sdk_examples/LLM_usage.py</code> → 读 <code>ai.py</code>、<code>embodied.py</code></li>
+        <li><b>零点标定</b>：把臂摆到机械零位 → GUI 存零点 → 确认 <code>custom_zero.json</code> 里 6 个值都非 0</li>
+        <li><b>手眼标定</b>：核对 <code>calibration_parameter.json</code> 的内参与 RT_camera2end 是否对应你的相机安装位</li>
+        <li><b>仿真验证</b>：标定后先在 MuJoCo 里做可达性实验，再上真机抓取</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-n">6</div>
+    <div class="step-body">
+      <b>按职业方向挑一条深入（持续）</b>
+      <div class="goal">对应知识地图第 3 档，三条路各自有对应的教学示例：</div>
+      <ul class="plain">
+        <li><b>视觉抓取 / 感知方向</b>：<code>example/control_sdk_examples/visual_grasp_example.py</code> → 精读 <code>Embodied_SDK/visual_grasp.py</code>（855 行，最厚的 SDK 模块）</li>
+        <li><b>机器人学习方向（市场最热）</b>：从 Joy-Con 遥操（<code>joycon.py</code>）入门采数据 → 学 PyTorch 模仿学习 → 了解 LeRobot / OpenVLA 生态</li>
+        <li><b>AI / 语音交互方向</b>：<code>example/ai_sdk_examples/LLM_usage.py</code> → 读 <code>ai.py</code>、<code>embodied.py</code>；顺手把 LLM 404 问题排查掉</li>
       </ul>
     </div>
   </div>

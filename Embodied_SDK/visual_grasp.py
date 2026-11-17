@@ -70,6 +70,139 @@ def _load_motor_config():
     return config
 
 
+# ---------------------------------------------------------------------------
+# 标定参数加载 & 抓取点安全检查（2026-11 修复：转换结果可能算出桌面以下的点）
+# ---------------------------------------------------------------------------
+
+SAFE_Z_MIN = 10.0        # mm 最低安全高度（桌面以上）
+SAFE_Z_MAX = 450.0       # mm 最高抓取高度
+WORKSPACE_MAX_R = 420.0  # mm 水平最大可达半径（L1+L2≈420.6，留余量）
+
+
+def _load_calibration_safe(embodied_internal):
+    """按优先级加载标定参数：官方 getter → 已有 loader → 项目内 json 文件。
+
+    注意：旧代码只探测 `_load_calibration_params`，而编译模块实际提供的是
+    `_get_calibration_params`，导致永远走 json 回退分支——两套参数的解析
+    结果可能不一致，是像素→世界换算异常的常见来源。
+    """
+    import json
+    import os
+
+    for name in ("_get_calibration_params", "_load_calibration_params"):
+        fn = getattr(embodied_internal, name, None)
+        if callable(fn):
+            try:
+                calib = fn()
+            except Exception as e:
+                print(f" [Calib] {name}() 调用失败: {e}")
+                calib = None
+            if calib:
+                print(f" [Calib] 使用 {name}() 加载标定参数")
+                return calib
+
+    try:
+        candidates = []
+        cfg_dir = os.environ.get("HORIZONARM_CONFIG_DIR", "").strip()
+        if cfg_dir:
+            candidates.append(os.path.join(cfg_dir, "calibration_parameter.json"))
+        data_root = os.environ.get("HORIZON_DATA_DIR", "").strip()
+        if data_root:
+            candidates.append(os.path.join(data_root, "config", "calibration_parameter.json"))
+        root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        candidates.append(os.path.join(root_dir, "config", "calibration_parameter.json"))
+
+        for path in candidates:
+            if path and os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    calib = json.load(f)
+                print(f" [Calib] 使用 JSON 文件加载标定参数: {path}")
+                return calib
+    except Exception as e:
+        print(f" [Calib] 读取标定文件失败: {e}")
+
+    return None
+
+
+def _read_vision_grasp_config():
+    """读取 all_parameter_config.json 的 vision_grasp 段（失败返回空字典）"""
+    import json
+    import os
+    try:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        cfg_dir = os.environ.get("HORIZONARM_CONFIG_DIR", "").strip() or os.path.join(root, "config")
+        path = os.path.join(cfg_dir, "all_parameter_config.json")
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                return json.load(f).get("vision_grasp", {})
+    except Exception as e:
+        print(f" [VisionCfg] 读取配置失败: {e}")
+    return {}
+
+
+def _try_fix_world(u, v, calib, pose, tcp_xyz, embodied_internal):
+    """姿态/深度约定修正（需在配置中开启 auto_pose_convention_fix）。
+
+    背景：实测拍照位末端姿态为 roll≈0，而手眼矩阵按 roll≈180 约定标定；
+    同时 grasp_depth 固定值(300) 小于相机真实高度(约446)，两者叠加导致
+    换算出的目标点落到桌面以下（z≈-795mm）。
+
+    这里按"roll+180"与"深度=相机高度(+tcp_z)"的组合依次尝试，
+    取第一个通过安全检查的结果。返回 (world, 说明) 或 (None, 原因)。
+    """
+    z_cam = float(pose[2]) + float(tcp_xyz[2])
+    trials = [
+        ("roll+180", [pose[0], pose[1], pose[2], pose[3], pose[4], float(pose[5]) + 180.0], None),
+        ("roll+180 + depth=相机高度", [pose[0], pose[1], pose[2], pose[3], pose[4], float(pose[5]) + 180.0], z_cam),
+        ("depth=相机高度", [pose[0], pose[1], pose[2], pose[3], pose[4], float(pose[5])], z_cam),
+    ]
+    old_depth = None
+    try:
+        old_depth = embodied_internal._get_grasp_params().get("grasp_depth", None)
+        for tag, p, depth in trials:
+            if depth is not None:
+                embodied_internal._set_grasp_params(grasp_depth=float(depth))
+            w = embodied_internal._convert_pixel_to_world_coords(
+                u, v, calib, p, tcp_x=tcp_xyz[0], tcp_y=tcp_xyz[1], tcp_z=tcp_xyz[2],
+            )
+            ok, reason, xyz, r = check_world_point(w)
+            if ok:
+                return xyz, f"{tag}（depth={depth if depth is not None else old_depth}）"
+            print(f" [GraspPixel] 修正尝试[{tag}] 无效: {reason}")
+    finally:
+        if old_depth is not None:
+            embodied_internal._set_grasp_params(grasp_depth=float(old_depth))
+    return None, "所有约定组合均不可行"
+
+
+def check_world_point(world, max_r: float = WORKSPACE_MAX_R):
+    """检查像素→世界换算结果是否可信。
+
+    Returns:
+        (ok: bool, reason: str, xyz: tuple|None, r: float)
+    """
+    import math
+
+    if world is None:
+        return False, "换算返回 None", None, 0.0
+    try:
+        x, y, z = (float(v) for v in world)
+    except Exception:
+        return False, f"返回值无法解析: {world}", None, 0.0
+
+    if not all(math.isfinite(v) for v in (x, y, z)):
+        return False, f"结果含 NaN/Inf: ({x}, {y}, {z})", None, 0.0
+
+    r = math.hypot(x, y)
+    if z < SAFE_Z_MIN:
+        return False, f"z={z:.1f}mm 低于安全下限 {SAFE_Z_MIN}mm（目标在桌面以下）", (x, y, z), r
+    if z > SAFE_Z_MAX:
+        return False, f"z={z:.1f}mm 高于安全上限 {SAFE_Z_MAX}mm", (x, y, z), r
+    if r > max_r:
+        return False, f"水平距离 {r:.1f}mm 超出可达半径 {max_r}mm", (x, y, z), r
+    return True, "", (x, y, z), r
+
+
 class VisualGraspSDK:
     """
     视觉抓取高层封装类。
@@ -105,6 +238,7 @@ class VisualGraspSDK:
             camera_id: OpenCV 摄像头设备 ID，默认为 0
         """
         self.camera_id = camera_id
+        self.last_error: Optional[str] = None   # 最近一次抓取失败的详细原因（供 GUI 展示）
 
         # 初始化摄像头 ID 到内部全局状态（供像素世界坐标转换等函数使用）
         embodied_internal = horizon_gateway.get_embodied_internal_module()
@@ -274,52 +408,19 @@ class VisualGraspSDK:
         """
         # 1) 获取当前末端位姿（与 GUI 内部逻辑一致）
         embodied_internal = horizon_gateway.get_embodied_internal_module()
+        self.last_error = None
         current_pose = embodied_internal._get_current_arm_pose()
+        print("current_pose:", current_pose)
         if current_pose is None:
-            print(" [GraspPixel] 机械臂未连接或无法获取当前位姿")
+            self.last_error = "机械臂未连接或无法获取当前位姿"
+            print(f" [GraspPixel] {self.last_error}")
             return False
 
         # 2) 加载相机 / 手眼标定参数
-        calib = None
-        if hasattr(embodied_internal, "_load_calibration_params"):
-            calib = embodied_internal._load_calibration_params()
-        else:
-            # 手动加载逻辑 (备用方案)：优先使用统一外置配置目录，其次回退到项目内 config
-            import json
-            import os
-            try:
-                config_path = ""
-                # 1) 优先外置配置目录（run_gui/启动代码会设置 HORIZONARM_CONFIG_DIR）
-                cfg_dir = os.environ.get("HORIZONARM_CONFIG_DIR", "").strip()
-                if cfg_dir:
-                    candidate = os.path.join(cfg_dir, "calibration_parameter.json")
-                    if os.path.exists(candidate):
-                        config_path = candidate
-                # 2) 其次资源根目录（HORIZON_DATA_DIR/config）
-                if not config_path:
-                    data_root = os.environ.get("HORIZON_DATA_DIR", "").strip()
-                    if data_root:
-                        candidate = os.path.join(data_root, "config", "calibration_parameter.json")
-                        if os.path.exists(candidate):
-                            config_path = candidate
-                # 3) 最后回退到项目内 config（假设 SDK 在 Embodied_SDK 目录下）
-                if not config_path:
-                    current_dir = os.path.dirname(os.path.abspath(__file__))
-                    root_dir = os.path.dirname(current_dir)
-                    candidate = os.path.join(root_dir, "config", "calibration_parameter.json")
-                    if os.path.exists(candidate):
-                        config_path = candidate
-
-                if config_path and os.path.exists(config_path):
-                    with open(config_path, "r", encoding="utf-8") as f:
-                        calib = json.load(f)
-                else:
-                    print(" 无法找到标定文件: calibration_parameter.json")
-            except Exception as e:
-                print(f" 手动加载标定参数失败: {e}")
-
+        calib = _load_calibration_safe(embodied_internal)
         if not calib:
-            print(" [GraspPixel] 未找到标定参数 calibration_parameter.json")
+            self.last_error = "未找到标定参数 calibration_parameter.json"
+            print(f" [GraspPixel] {self.last_error}")
             return False
 
         # 3) 读取全局抓取参数（姿态、TCP 偏移、深度）
@@ -333,12 +434,7 @@ class VisualGraspSDK:
         tcp_y = grasp.get("tcp_offset_y", 0.0)
         tcp_z = grasp.get("tcp_offset_z", 0.0)
         
-        # 4) 像素  基座坐标 (mm)，复用 embodied_internal 中的通用转换逻辑
-        # 注意：embodied_internal._convert_pixel_to_world_coords 通常依赖 grasp dict 中的 grasp_depth 等信息，
-        # 如果它内部没用 grasp dict 而是其他方式，这里可能需要 hack。
-        # 假设 convert_pixel_to_world_coords 只做投影，Z值控制可能依赖 grasp_depth
-        # 通常 convert 函数只返回投影后的 (x, y, z_surface)
-        
+        # 4) 像素 → 基座坐标 (mm)，复用 embodied_internal 中的通用转换逻辑
         world = embodied_internal._convert_pixel_to_world_coords(
             u,
             v,
@@ -348,11 +444,34 @@ class VisualGraspSDK:
             tcp_y=tcp_y,
             tcp_z=tcp_z,
         )
-        if world is None:
-            print(" [GraspPixel] 像素坐标转换失败")
-            return False
 
-        x_w, y_w, z_w = world
+        # 4.1) 安全检查：换算结果必须是桌面以上、臂展以内的有限值。
+        #      历史问题：曾算出 z=-795mm 的目标点直接下发，IK 开根号负数 → 关节角 NaN。
+        ok, reason, xyz, r = check_world_point(world)
+        if not ok:
+            print(f" [GraspPixel] 换算结果异常: {reason}；raw world={world}")
+            # 可选的姿态/深度约定修正（在 all_parameter_config.json 中开启）
+            if _read_vision_grasp_config().get("auto_pose_convention_fix", False):
+                print(" [GraspPixel] 已开启 auto_pose_convention_fix，尝试约定修正...")
+                fixed, tag = _try_fix_world(
+                    u, v, calib, current_pose, (tcp_x, tcp_y, tcp_z), embodied_internal
+                )
+                if fixed is not None:
+                    xyz = fixed
+                    r = (fixed[0] ** 2 + fixed[1] ** 2) ** 0.5
+                    ok = True
+                    print(f" [GraspPixel] ⚠️ 已按 [{tag}] 修正: "
+                          f"({xyz[0]:.1f}, {xyz[1]:.1f}, {xyz[2]:.1f}) mm")
+                    print(" [GraspPixel] ⚠️ 该修正为软件补偿，请尽快重新做手眼标定！")
+            if not ok:
+                self.last_error = f"抓取点非法：{reason}（像素 {u:.0f},{v:.0f}）"
+                print(f" [GraspPixel] {self.last_error}")
+                print(f" [GraspPixel] 诊断信息: pose={current_pose}, tcp=({tcp_x},{tcp_y},{tcp_z})")
+                print(" [GraspPixel] 已拒绝执行运动。请检查手眼标定/相机位姿/深度参数。")
+                return False
+
+        x_w, y_w, z_w = xyz
+        print(f" [GraspPixel] 目标点校验通过: ({x_w:.1f}, {y_w:.1f}, {z_w:.1f}) mm, 水平距离 {r:.1f}mm")
 
         # 5) 构造抓取姿态（完全沿用抓取参数里的 yaw/pitch/roll）
         yaw = grasp.get("yaw", 0.0)
@@ -367,6 +486,12 @@ class VisualGraspSDK:
         # 6) 调用已有的 c_a_p（末端位姿控制）执行抓取运动
         embodied_func = horizon_gateway.get_embodied_module()
         ok = embodied_func.c_a_p(pos, ori)
+        if not ok:
+            self.last_error = (
+                f"逆运动学无解：目标点 ({x_w:.1f}, {y_w:.1f}, {z_w:.1f}) "
+                f"姿态 {ori} 不可达或超出关节限位"
+            )
+            print(f" [GraspPixel] {self.last_error}")
         return bool(ok)
 
     def grasp_at_bbox(
@@ -687,7 +812,7 @@ class FollowGraspSDK(VisualGraspSDK):
                 return False
 
             # 2) 加载相机标定参数
-            calib = embodied_internal._load_calibration_params()
+            calib = _load_calibration_safe(embodied_internal)
             if not calib:
                 print(" [Follow] 未找到标定参数 calibration_parameter.json")
                 return False
@@ -698,7 +823,7 @@ class FollowGraspSDK(VisualGraspSDK):
             tcp_y = grasp.get("tcp_offset_y", 0.0)
             tcp_z = grasp.get("tcp_offset_z", 0.0)
 
-            # 4) 像素  世界坐标（单位：毫米）
+            # 4) 像素 → 世界坐标（单位：毫米）
             world = embodied_internal._convert_pixel_to_world_coords(
                 pixel_x,
                 pixel_y,
@@ -708,10 +833,12 @@ class FollowGraspSDK(VisualGraspSDK):
                 tcp_y=tcp_y,
                 tcp_z=tcp_z,
             )
-            if world is None:
+            ok_pt, reason, xyz, _r = check_world_point(world)
+            if not ok_pt:
+                print(f" [Follow] 目标点非法，跳过本次伺服: {reason}")
                 return False
 
-            x_w, y_w, z_w = world
+            x_w, y_w, z_w = xyz
 
             # 5) 应用与 GUI 一致的坐标补偿：先缩放，再偏移
             try:

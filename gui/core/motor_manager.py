@@ -79,7 +79,8 @@ class MotorManager:
 
         all_ratios = get_reducer_ratios()
         all_dirs = get_directions()
-
+        logger.info(f"all_ratios:{all_ratios}")
+        logger.info(f"all_dirs:{all_ratios}")
         for motor_id in motor_ids:
             try:
                 motor = create_motor_controller(motor_id=motor_id, **self.interface_params)

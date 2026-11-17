@@ -10,3 +10,4 @@ python horizon_gui.py
 热启动：
 cd G:\WL\Embodied_Arm\Project\Embodied_Arm-main
 python gui/dev_launcher.py
+
