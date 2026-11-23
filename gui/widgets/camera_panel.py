@@ -1362,10 +1362,13 @@ class CameraPanel(QWidget):
             self.log_message.emit("error", "电机未连接，无法移动到拍照位置")
             return
         try:
+            # 拍照位置 = 其他关节 0° + 关节5 抬到 90°（与抓取链路回位行为一致，
+            # 见 _CompoundSequenceWorker / _PickPlaceWorker / _auto_return_photo）。
+            # 此前此处误写为 {5: 0.0}，导致从零位点击时目标=当前位置而无动作。
             self._motor_manager.go_to_custom_zero_sequential(
-                speed=self._get_speed(), last_joint=5, extra_offsets={5: 0.0}   #？？？为什么要设置关节5额外偏移度
+                speed=self._get_speed(), last_joint=5, extra_offsets={5: 90.0}
             )
-            self.log_message.emit("info", "运动到拍照位置: 先动其他关节，最后动关节5")
+            self.log_message.emit("info", "运动到拍照位置: 其他关节归零，最后关节5 抬到 90°")
         except Exception as e:
             self.log_message.emit("error", f"运动到拍照位置失败: {e}")
 
