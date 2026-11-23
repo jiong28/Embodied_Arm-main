@@ -463,7 +463,7 @@ class VisualGraspSDK:
         Returns:
             OpenCV 图像（numpy.ndarray），失败时返回 None。
         """
-        cap = cv2.VideoCapture(self.camera_id)
+        cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
         if not cap.isOpened():
             print(f" 无法打开摄像头 {self.camera_id}")
             cap.release()
@@ -829,7 +829,7 @@ class FollowGraspSDK(VisualGraspSDK):
         self._follow_running = True
 
         def _loop():
-            cap = cv2.VideoCapture(self.camera_id)
+            cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
             if not cap.isOpened():
                 print(f" [Follow] 无法打开摄像头 {self.camera_id}")
                 self._follow_running = False

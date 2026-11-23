@@ -1106,7 +1106,7 @@ class CameraPanel(QWidget):
 
     def _reopen_camera(self):
         cam_id = int(self.id_combo.currentText())
-        self._cap = cv2.VideoCapture(cam_id)
+        self._cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
         if self._cap.isOpened():
             self._timer.start(33)
         else:
@@ -2615,7 +2615,7 @@ class CameraPanel(QWidget):
 
     def _on_connect(self):
         cam_id = int(self.id_combo.currentText())
-        self._cap = cv2.VideoCapture(cam_id)
+        self._cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
         if not self._cap.isOpened():
             self.log_message.emit("error", f"无法打开相机 {cam_id}")
             self._cap = None
