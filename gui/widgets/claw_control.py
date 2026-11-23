@@ -24,10 +24,21 @@ def _load_close_angle() -> float:
 
 
 def _save_close_angle(angle: float):
+    """读-改-写，保留 servo_invert 等其他字段"""
     try:
         os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
-        with open(CONFIG_PATH, "w") as f:
-            json.dump({"close_angle": angle}, f)
+        data = {}
+        if os.path.exists(CONFIG_PATH):
+            try:
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                data = {}
+        data["close_angle"] = float(angle)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
     except Exception:
         pass
 
@@ -128,7 +139,8 @@ class ClawControl(QWidget):
         port = self.port_combo.currentText().strip()
         self.claw.port = port
         if self.claw.connect():
-            self.log_message.emit("info", f"夹爪已连接: {port}")
+            self.claw.reload_config()
+            self.log_message.emit("info", f"夹爪已连接: {port}｜方向: {self.claw.direction_desc()}")
             self.btn_connect.setEnabled(False)
             self.btn_disconnect.setEnabled(True)
             self.btn_open.setEnabled(True)

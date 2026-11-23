@@ -154,15 +154,18 @@ class GraspWorker(QThread):
     finished = pyqtSignal(bool)
     error = pyqtSignal(str)
 
-    def __init__(self, vision_sdk, u, v, speed=500):
+    def __init__(self, vision_sdk, u, v, speed=500, claw=None, open_angle=90.0):
         super().__init__()
         self._sdk = vision_sdk
         self._u = u
         self._v = v
         self._speed = speed
+        self._claw = claw
+        self._open_angle = open_angle
 
     def run(self):
         try:
+            import time
             from Horizon_Core import gateway as horizon_gateway
             embodied_internal = horizon_gateway.get_embodied_internal_module()
             embodied_internal._set_motion_params(
@@ -170,6 +173,10 @@ class GraspWorker(QThread):
                 acceleration=self._speed,
                 deceleration=self._speed,
             )
+            # 抓取前先把夹爪复位到张开，避免沿用上一次的闭合状态导致抓空/顶撞
+            if self._claw is not None and getattr(self._claw, "is_connected", False):
+                self._claw.set_angle(self._open_angle)
+                time.sleep(0.8)
             ok = self._sdk.grasp_at_pixel(self._u, self._v)
             self.finished.emit(bool(ok))
         except Exception as e:
@@ -185,6 +192,12 @@ class VisionManager:
         self._initialized = False
         self._camera_id = 0
         self._grasp_params: Dict[str, Any] = {}
+        # 夹爪控制器（可选）。设置后，每次发起抓取前会自动把夹爪张开。
+        self.claw = None
+
+    def set_claw(self, claw):
+        """注入夹爪控制器，用于抓取前自动复位到张开状态"""
+        self.claw = claw
 
     @property
     def is_initialized(self) -> bool:
@@ -368,7 +381,7 @@ class VisionManager:
         """异步执行像素抓取，返回 GraspWorker（由调用方启动和连接信号）"""
         if not self._check_ready("像素抓取"):
             return None
-        worker = GraspWorker(self._vision_sdk, u, v, speed=speed)
+        worker = GraspWorker(self._vision_sdk, u, v, speed=speed, claw=self.claw)
         return worker
 
     def _check_ready(self, action: str) -> bool:

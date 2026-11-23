@@ -252,6 +252,11 @@ class _PickPlaceWorker(QThread):
                 deceleration=self._speed,
             )
 
+            # ⓪ 抓取前先张开夹爪（避免沿用上一次的闭合状态导致抓空）
+            if self._claw and self._claw.is_connected:
+                self._claw.set_angle(90)
+                time.sleep(0.8)
+
             # ① 抓取目标物体
             self.progress.emit(f"① 抓取 {target_name}...")
             tx1, ty1, tx2, ty2 = self._target["bbox"]
@@ -572,6 +577,9 @@ class CameraPanel(QWidget):
 
     def set_claw_controller(self, claw):
         self._claw = claw
+        # 同步给视觉管理器：抓取前自动张开夹爪
+        if self._vision_manager is not None:
+            self._vision_manager.set_claw(claw)
 
     def _get_speed(self) -> int:
         """获取当前速度设置"""
@@ -1229,15 +1237,25 @@ class CameraPanel(QWidget):
         return 65.0
 
     def _save_claw_close_angle(self, angle: float):
-        """保存夹爪闭合角度到配置文件"""
+        """保存夹爪闭合角度到配置文件（读-改-写，保留 servo_invert 等其他字段）"""
         try:
             config_path = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                 "config", "claw_config.json",
             )
             os.makedirs(os.path.dirname(config_path), exist_ok=True)
-            with open(config_path, "w") as f:
-                json.dump({"close_angle": angle}, f)
+            data = {}
+            if os.path.exists(config_path):
+                try:
+                    with open(config_path, "r", encoding="utf-8") as f:
+                        loaded = json.load(f)
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except Exception:
+                    data = {}
+            data["close_angle"] = float(angle)
+            with open(config_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False)
         except Exception:
             pass
 

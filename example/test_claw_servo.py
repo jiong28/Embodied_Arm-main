@@ -122,7 +122,7 @@ try:
             angle = input("张开角度 (默认 90): ").strip() or "90"
             a = max(0, min(90, int(angle)))
             ser.write(f"{a}\n".encode())
-            print(f"已发送: {a}")
+            print(f"已发送原始舵机角: {a}（本脚本直连舵机，方向取决于硬件装配）")
         elif choice == '2':
             ser.write(b"0\n")
             print("已发送: 0")
