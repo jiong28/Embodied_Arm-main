@@ -15,6 +15,7 @@ from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QPoint, QThread
 from PyQt5.QtGui import QImage, QPixmap, QPainter, QPen, QColor, QFont
 
 from gui.core.vision_manager import VisionManager, LLMDetectWorker
+from Embodied_SDK.visual_grasp import open_capture
 
 
 _BOX_COLORS = [
@@ -1095,8 +1096,8 @@ class CameraPanel(QWidget):
 
     def _reopen_camera(self):
         cam_id = int(self.id_combo.currentText())
-        self._cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
-        if self._cap.isOpened():
+        self._cap = open_capture(cam_id)
+        if self._cap is not None:
             self._timer.start(33)
         else:
             self.log_message.emit("error", "摄像头恢复失败，请手动断开重连")
@@ -2614,10 +2615,9 @@ class CameraPanel(QWidget):
 
     def _on_connect(self):
         cam_id = int(self.id_combo.currentText())
-        self._cap = cv2.VideoCapture(cam_id, cv2.CAP_DSHOW)
-        if not self._cap.isOpened():
+        self._cap = open_capture(cam_id)
+        if self._cap is None:
             self.log_message.emit("error", f"无法打开相机 {cam_id}")
-            self._cap = None
             return
 
         self.log_message.emit("info", f"相机 {cam_id} 已连接")

@@ -203,6 +203,34 @@ def check_world_point(world, max_r: float = WORKSPACE_MAX_R):
     return True, "", (x, y, z), r
 
 
+def open_capture(cam_id):
+    """打开相机，自动选择可用后端。
+
+    背景：Windows 下 MSMF 抓帧偶发超时（can't grab frame），
+    DSHOW 更快更稳，但部分环境 DSHOW 无法按索引打开
+    （WARN: VIDEOIO(DSHOW) ... can't be used to capture by index）。
+    因此按 DSHOW → MSMF → 默认 的顺序尝试，返回已打开的
+    VideoCapture 或 None。
+    """
+    for backend in (cv2.CAP_DSHOW, cv2.CAP_MSMF):
+        try:
+            cap = cv2.VideoCapture(cam_id, backend)
+        except Exception:
+            cap = None
+        if cap is not None and cap.isOpened():
+            return cap
+        if cap is not None:
+            cap.release()
+    try:
+        cap = cv2.VideoCapture(cam_id)
+    except Exception:
+        return None
+    if cap.isOpened():
+        return cap
+    cap.release()
+    return None
+
+
 # ---------------------------------------------------------------------------
 # IK 可达性预检查（2026-11 修复）
 # 背景：目标点若落在基座正上方的近处死区，c_a_p 只会笼统返回“逆运动学无解”，
@@ -463,10 +491,9 @@ class VisualGraspSDK:
         Returns:
             OpenCV 图像（numpy.ndarray），失败时返回 None。
         """
-        cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
-        if not cap.isOpened():
+        cap = open_capture(self.camera_id)
+        if cap is None:
             print(f" 无法打开摄像头 {self.camera_id}")
-            cap.release()
             return None
 
         ok, frame = cap.read()
@@ -829,11 +856,10 @@ class FollowGraspSDK(VisualGraspSDK):
         self._follow_running = True
 
         def _loop():
-            cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
-            if not cap.isOpened():
+            cap = open_capture(self.camera_id)
+            if cap is None:
                 print(f" [Follow] 无法打开摄像头 {self.camera_id}")
                 self._follow_running = False
-                cap.release()
                 return
 
             print(f" [Follow] 启动跟随线程，target_class={self._follow_target_class}, conf={self._follow_conf}")
