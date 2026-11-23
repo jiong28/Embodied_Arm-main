@@ -566,6 +566,13 @@ class VisualGraspSDK:
                 print(f" [GraspPixel] {self.last_error}")
                 print(f" [GraspPixel] 诊断信息: pose={current_pose}, tcp=({tcp_x},{tcp_y},{tcp_z})")
                 print(" [GraspPixel] 已拒绝执行运动。请检查手眼标定/相机位姿/深度参数。")
+                if "低于安全下限" in reason:
+                    self.last_error += (
+                        "。常见原因：机械臂不在拍照位（如上次抓取后停在低位未回位），"
+                        "请先回拍照位/回零后再抓取"
+                    )
+                    print(" [GraspPixel] 提示: 本换算使用当前末端位姿；若上次抓取后未回拍照位，"
+                          "请先回位再点抓取。")
                 return False
 
         x_w, y_w, z_w = xyz

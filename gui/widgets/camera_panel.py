@@ -1037,8 +1037,11 @@ class CameraPanel(QWidget):
                 self.log_message.emit("info", f"自动闭合夹爪: {angle}°")
                 QTimer.singleShot(1500, self._auto_return_photo)
             else:
-                self.log_message.emit("info", "抓取完成（仅6关节运动，夹爪不动）")
-                self._speak_if_voice("好的，抓取完成")
+                # 手动抓取模式：抓取后同样自动回拍照位。
+                # 原因：像素→世界换算依赖拍照位姿，若停在桌面低位，
+                # 下一次点击抓取会把目标投影到桌面以下（如 z=-614mm）而必然失败。
+                self.log_message.emit("info", "抓取完成（仅6关节运动，夹爪不动），自动回到拍照位置...")
+                self._auto_return_photo()
         else:
             reason = None
             if self._vision_manager is not None:
