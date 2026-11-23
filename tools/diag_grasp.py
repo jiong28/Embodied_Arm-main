@@ -149,8 +149,25 @@ def main():
     if z_w < 10:
         print("  ⚠️ z 过低，注意是否会把夹爪压到桌面")
 
-    # ---------- ⑤ c_a_p 执行 ----------
-    step("⑤ 调用 c_a_p 执行末端运动")
+    # ---------- ⑤ IK 可达性预检查 ----------
+    step("⑤ IK 可达性预检查（关节限位）")
+    try:
+        from Embodied_SDK.visual_grasp import _get_kinematics, _check_ik
+        kin = _get_kinematics()
+        reach_ok, reach_msg, sol = _check_ik(
+            kin, x_w, y_w, z_w,
+            grasp.get("yaw", 0.0), grasp.get("pitch", 0.0), grasp.get("roll", 180.0))
+        if reach_ok:
+            print(f"{PASS} 存在可行解: {None if sol is None else sol.round(1).tolist()}")
+        else:
+            print(f"{FAIL} 不可达: {reach_msg}")
+            print("   → 这就是抓取失败根因：物体离基座过近或过低。需放远至半径≥210mm；")
+            print("     若同一物体始终被算到近处，请重做手眼标定。")
+    except Exception as e:
+        print(f"  (IK 预检查跳过: {e})")
+
+    # ---------- ⑥ c_a_p 执行 ----------
+    step("⑥ 调用 c_a_p 执行末端运动")
     grasp2 = embodied_internal._get_grasp_params()
     yaw = grasp2.get("yaw", 0.0)
     pitch = grasp2.get("pitch", 0.0)

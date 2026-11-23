@@ -203,6 +203,104 @@ def check_world_point(world, max_r: float = WORKSPACE_MAX_R):
     return True, "", (x, y, z), r
 
 
+# ---------------------------------------------------------------------------
+# IK 可达性预检查（2026-11 修复）
+# 背景：目标点若落在基座正上方的近处死区，c_a_p 只会笼统返回“逆运动学无解”，
+#       无法区分“数学无解”“关节超限”“标定偏差”。这里在运动前用同一套
+#       RobotKinematics 预判，给出明确原因与建议，避免无效运动与误判。
+# ---------------------------------------------------------------------------
+_KIN_CACHE = {"kin": None}
+
+# 与 config/dh_parameters_config.json 的 joint_limits 保持一致
+_JOINT_LIMITS = [
+    (-90.0, 90.0),   # J1
+    (-20.0, 90.0),   # J2
+    (-90.0, 35.0),   # J3  ← 桌面近处抓取最常超限的关节
+    (-90.0, 90.0),   # J4
+    (-90.0, 90.0),   # J5
+    (-90.0, 90.0),   # J6
+]
+
+
+def _get_kinematics():
+    """构造与 c_a_p 一致的 RobotKinematics（默认 DH + 角度偏移），失败返回 None。"""
+    if _KIN_CACHE["kin"] is not None:
+        return _KIN_CACHE["kin"]
+    try:
+        from Horizon_Core.core.arm_core.kinematics import RobotKinematics
+        kin = RobotKinematics()
+        try:
+            kin.set_angle_offset([0.0, 90.0, 0.0, 0.0, 0.0, 0.0])
+        except Exception:
+            pass
+        _KIN_CACHE["kin"] = kin
+        print(" [IK] 运动学模块初始化成功")
+        return kin
+    except Exception as e:
+        print(f" [IK] 无法初始化运动学模块，跳过预检查: {e}")
+        return None
+
+
+def _euler_ypr_to_matrix(yaw, pitch, roll):
+    """[yaw,pitch,roll](deg) -> R = Rz(yaw)·Ry(pitch)·Rx(roll)，与 c_a_p 约定一致。"""
+    y, p, r = np.deg2rad([float(yaw), float(pitch), float(roll)])
+    cy, sy = np.cos(y), np.sin(y)
+    cp, sp = np.cos(p), np.sin(p)
+    cr, sr = np.cos(r), np.sin(r)
+    Rz = np.array([[cy, -sy, 0.0], [sy, cy, 0.0], [0.0, 0.0, 1.0]])
+    Ry = np.array([[cp, 0.0, sp], [0.0, 1.0, 0.0], [-sp, 0.0, cp]])
+    Rx = np.array([[1.0, 0.0, 0.0], [0.0, cr, -sr], [0.0, sr, cr]])
+    return Rz @ Ry @ Rx
+
+
+def _check_ik(kin, x, y, z, yaw, pitch, roll):
+    """预判目标位姿是否存在“全在关节限位内”的 IK 解。
+
+    Returns:
+        (ok: bool, msg: str, sol: np.ndarray|None)
+        - ok=True ：存在可行解（或 IK 格式无法判定时保守放行）
+        - ok=False：无任何合法解，msg 含具体超限关节
+    """
+    R = _euler_ypr_to_matrix(yaw, pitch, roll)
+    T = np.eye(4)
+    T[:3, :3] = R
+    T[:3, 3] = [float(x), float(y), float(z)]
+    try:
+        raw = kin.inverse_kinematics(T)
+    except Exception as e:
+        return True, f"IK 求解异常，跳过预检查: {e}", None
+    arr = np.asarray(raw, dtype=float).ravel()
+    if arr.size == 0 or arr.size % 6 != 0:
+        return True, "IK 返回格式未知，跳过预检查", None
+    sols = arr.reshape(arr.size // 6, 6)
+
+    for s in sols:
+        if all(_JOINT_LIMITS[j][0] <= s[j] <= _JOINT_LIMITS[j][1] for j in range(6)):
+            return True, "", s
+
+    # 全部超限：选“总超限量最小”的一组解，报告它的超限关节（比取全解最大值更贴近实际）
+    best_sol, best_excess, best_detail = None, float("inf"), {}
+    for s in sols:
+        excess, detail_dict = 0.0, {}
+        for j in range(6):
+            lo, hi = _JOINT_LIMITS[j]
+            if s[j] > hi:
+                e = s[j] - hi
+                detail_dict[j + 1] = e
+            elif s[j] < lo:
+                e = lo - s[j]
+                detail_dict[j + 1] = e
+            else:
+                e = 0.0
+            excess += e
+        if excess < best_excess:
+            best_excess, best_sol, best_detail = excess, s, detail_dict
+    detail = "，".join(f"J{j} 超限 {v:.0f}°" for j, v in sorted(best_detail.items()))
+    return False, (
+        f"IK 解全部超出关节限位（最接近解 {np.round(best_sol, 1).tolist()}：{detail}）"
+    ), None
+
+
 class VisualGraspSDK:
     """
     视觉抓取高层封装类。
@@ -480,6 +578,26 @@ class VisualGraspSDK:
 
         pos = [float(x_w), float(y_w), float(z_w)]
         ori = [float(yaw), float(pitch), float(roll)]
+
+        # 5.5) IK 可达性预检查：在真正运动前拦截不可达点，给出明确原因与建议，
+        #      避免 c_a_p 只返回笼统的“逆运动学无解”而无从排查。
+        kin = _get_kinematics()
+        if kin is not None:
+            reachable, ik_msg, _sol = _check_ik(kin, x_w, y_w, z_w, yaw, pitch, roll)
+            if not reachable:
+                r_now = (x_w ** 2 + y_w ** 2) ** 0.5
+                self.last_error = (
+                    f"目标点不可达 ({x_w:.1f}, {y_w:.1f}, {z_w:.1f})mm，"
+                    f"水平半径 {r_now:.0f}mm：{ik_msg}"
+                )
+                print(f" [GraspPixel] {self.last_error}")
+                print(" [GraspPixel] 可能原因：①物体离基座过近（桌面抓取最小可达半径约 210mm）"
+                      "或过低；②手眼标定偏差使换算点落到近处死区。")
+                print(" [GraspPixel] 建议：把物体放远至半径≥210mm；若同一物体始终被算到近处，"
+                      "请重做手眼标定。")
+                return False
+            else:
+                print(f" [GraspPixel] IK 预检查通过: {np.round(_sol, 1).tolist()}")
 
         print(f" [GraspPixel] 执行抓取: Pos={pos}, Ori={ori}")
 
