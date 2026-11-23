@@ -26,21 +26,9 @@ _BOX_COLORS = [
     QColor(0, 188, 212),
 ]
 
-# 拍照位置关节5角度：config/photo_position.json（j5_deg）。
-# 历史 bug：全项目曾统一用 90°，但实测 90° 时相机朝上看不到桌面；
-# 正确值以现场实测为准（默认 0°，即 2026-11-23 21:50 成功抓取时的姿态）。
-_PHOTO_CONFIG_PATH = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "config", "photo_position.json",
-)
-
-
-def _load_photo_j5(default: float = 0.0) -> float:
-    try:
-        with open(_PHOTO_CONFIG_PATH, "r", encoding="utf-8") as f:
-            return float(json.load(f).get("j5_deg", default))
-    except Exception:
-        return default
+# 拍照位姿态已改为示教式（见 motor_manager.record_photo_position / go_to_photo_position）：
+# 手动摆好姿态后点「记录拍照位」，全部关节角保存到 config/photo_position.json；
+# 未记录时回退为「全 0 + j5_deg」。
 
 
 class ClickableLabel(QLabel):
@@ -170,11 +158,9 @@ class _CompoundSequenceWorker(QThread):
 
             # ② 回到拍照位置（安全高度）
             self.progress.emit("② 回到拍照位置...")
-            self._mm.go_to_custom_zero_sequential(
-                speed=self._speed, last_joint=5, extra_offsets={5: _load_photo_j5()}
-            )
+            _tg = self._mm.go_to_photo_position(speed=self._speed)
             # 等待到位
-            self._wait_joint5(_load_photo_j5(), timeout=20)
+            self._wait_joint5((_tg or {}).get(5, 0.0), timeout=20)
 
             # ③ 移动到放回位置
             x, y, z = self._target
@@ -201,10 +187,8 @@ class _CompoundSequenceWorker(QThread):
 
             # ⑤ 回到拍照位置
             self.progress.emit("⑤ 回到拍照位置...")
-            self._mm.go_to_custom_zero_sequential(
-                speed=self._speed, last_joint=5, extra_offsets={5: _load_photo_j5()}
-            )
-            self._wait_joint5(_load_photo_j5(), timeout=20)
+            _tg = self._mm.go_to_photo_position(speed=self._speed)
+            self._wait_joint5((_tg or {}).get(5, 0.0), timeout=20)
 
             self.finished.emit("已完成：抓取 → 放回原位")
 
@@ -291,7 +275,7 @@ class _PickPlaceWorker(QThread):
 
             # ③ 回到拍照位置
             self.progress.emit("③ 回到拍照位置...")
-            self._mm.go_to_custom_zero_sequential(speed=self._speed, last_joint=5, extra_offsets={5: _load_photo_j5()})
+            self._mm.go_to_photo_position(speed=self._speed)
             time.sleep(5.0)
 
             # ④ 移动到容器上方（高于容器 150mm）
@@ -333,7 +317,7 @@ class _PickPlaceWorker(QThread):
 
             # ⑥ 回到拍照位置
             self.progress.emit("⑥ 回到拍照位置...")
-            self._mm.go_to_custom_zero_sequential(speed=self._speed, last_joint=5, extra_offsets={5: _load_photo_j5()})
+            self._mm.go_to_photo_position(speed=self._speed)
             time.sleep(5.0)
 
             self.finished.emit(f"已完成：{target_name} 放入 {container_name}")
@@ -630,12 +614,19 @@ class CameraPanel(QWidget):
         toolbar.addWidget(self.btn_disconnect)
 
         self.btn_photo_pos = QPushButton("拍照位置")
-        self.btn_photo_pos.setStyleSheet(
-            "QPushButton { background-color: #8b5cf6; color: white; font-weight: bold; padding: 6px 16px; border-radius: 4px; }"
+        self.btn_photo_pos.setStyleSheet(            "QPushButton { background-color: #8b5cf6; color: white; font-weight: bold; padding: 6px 16px; border-radius: 4px; }"
             "QPushButton:hover { background-color: #7c3aed; }"
         )
         self.btn_photo_pos.clicked.connect(self._on_photo_position)
         toolbar.addWidget(self.btn_photo_pos)
+
+        self.btn_record_photo = QPushButton("记录拍照位")
+        self.btn_record_photo.setToolTip(
+            "手动把机械臂摆到理想的拍照姿态（相机朝向桌面），\n"
+            "点此记录。之后\"拍照位置\"按钮与抓取回位都会走到该姿态。"
+        )
+        self.btn_record_photo.clicked.connect(self._on_record_photo_position)
+        toolbar.addWidget(self.btn_record_photo)
 
         toolbar.addWidget(QLabel("速度:"))
         self.speed_spin = QSpinBox()
@@ -1069,9 +1060,7 @@ class CameraPanel(QWidget):
     def _auto_return_photo(self):
         """自动回到拍照位置（夹爪不松开），完成后恢复语音监听"""
         if self._motor_manager and self._motor_manager.is_connected:
-            self._motor_manager.go_to_custom_zero_sequential(
-                speed=self._get_speed(), last_joint=5, extra_offsets={5: _load_photo_j5()}
-            )
+            self._motor_manager.go_to_photo_position(speed=self._get_speed())
             self.log_message.emit("info", "自动回到拍照位置")
             # 等待回到拍照位置后，通知语音会话恢复监听
             QTimer.singleShot(5000, lambda: self._speak_if_voice("好的，已完成"))
@@ -1378,16 +1367,32 @@ class CameraPanel(QWidget):
             self.log_message.emit("error", "电机未连接，无法移动到拍照位置")
             return
         try:
-            # 拍照位置 = 其他关节 0° + 关节5 到配置角度（config/photo_position.json）。
-            # 实测 90° 时相机朝上看不到桌面，默认已改为 0°；若现场姿态不同，
-            # 手动摆好姿态后把该关节角度写入 j5_deg 即可，无需改代码。
-            j5 = _load_photo_j5()
-            self._motor_manager.go_to_custom_zero_sequential(
-                speed=self._get_speed(), last_joint=5, extra_offsets={5: j5}
-            )
-            self.log_message.emit("info", f"运动到拍照位置: 其他关节归零，关节5 → {j5}°")
+            # 示教式拍照位：优先走"记录拍照位"保存的姿态；未记录时回退为
+            # 「其他关节 0° + 关节5 = j5_deg」（config/photo_position.json）。
+            targets = self._motor_manager.go_to_photo_position(speed=self._get_speed())
+            if targets is not None:
+                if self._motor_manager.has_photo_position():
+                    self.log_message.emit("info", f"运动到拍照位置(示教): {targets}")
+                else:
+                    self.log_message.emit("info", "运动到拍照位置(默认): 其他关节归零，关节5 → j5_deg")
         except Exception as e:
             self.log_message.emit("error", f"运动到拍照位置失败: {e}")
+
+    def _on_record_photo_position(self):
+        """示教：把当前姿态记录为拍照位"""
+        if not self._motor_manager or not self._motor_manager.is_connected:
+            self.log_message.emit("error", "电机未连接，无法记录拍照位")
+            return
+        try:
+            joints = self._motor_manager.record_photo_position()
+            self.log_message.emit("info", f"拍照位已记录: {joints}")
+            QMessageBox.information(
+                self, "拍照位已记录",
+                "已把当前姿态记录为拍照位置。\n"
+                "之后\"拍照位置\"按钮与抓取流程回位都会走到此姿态。",
+            )
+        except Exception as e:
+            self.log_message.emit("error", f"记录拍照位失败: {e}")
 
     # ---- 自然语言指令 ----
 
@@ -1509,7 +1514,7 @@ class CameraPanel(QWidget):
                             self._mm.go_to_custom_zero_sequential(speed=self._speed, last_joint=5)
                             time.sleep(6)
                         elif action == "go_photo":
-                            self._mm.go_to_custom_zero_sequential(speed=self._speed, last_joint=5, extra_offsets={5: _load_photo_j5()})
+                            self._mm.go_to_photo_position(speed=self._speed)
                             time.sleep(6)
                         elif action in ("nod", "shake"):
                             presets = self._load_presets_static()
@@ -1618,9 +1623,7 @@ class CameraPanel(QWidget):
                 self._finish_preset("好的，已回到零点位置")
 
             elif action == "go_photo":
-                self._motor_manager.go_to_custom_zero_sequential(
-                    speed=self._get_speed(), last_joint=5, extra_offsets={5: _load_photo_j5()}
-                )
+                self._motor_manager.go_to_photo_position(speed=self._get_speed())
                 self.log_message.emit("info", "已回到拍照位置")
                 self._finish_preset("好的，已回到拍照位置")
 
@@ -1821,9 +1824,7 @@ class CameraPanel(QWidget):
         """放回后回到拍照位置"""
         self._reopen_camera()  # 恢复摄像头画面
         if self._motor_manager and self._motor_manager.is_connected:
-            self._motor_manager.go_to_custom_zero_sequential(
-                speed=self._get_speed(), last_joint=5, extra_offsets={5: _load_photo_j5()}
-            )
+            self._motor_manager.go_to_photo_position(speed=self._get_speed())
         self._last_grasp_position = None
         self._reset_instruction_ui()
         self.log_message.emit("info", "已放回原位")
@@ -2141,9 +2142,7 @@ class CameraPanel(QWidget):
         """连续指令完成"""
         self._reopen_camera()  # 恢复摄像头
         if self._motor_manager and self._motor_manager.is_connected:
-            self._motor_manager.go_to_custom_zero_sequential(
-                speed=self._get_speed(), last_joint=5, extra_offsets={5: _load_photo_j5()}
-            )
+            self._motor_manager.go_to_photo_position(speed=self._get_speed())
         self._last_grasp_position = None
         self._reset_instruction_ui()
         self.log_message.emit("info", msg)

@@ -3,6 +3,7 @@ import os
 import json
 import time
 import logging
+import threading
 from typing import Dict, List, Optional, Any
 
 from PyQt5.QtCore import QThread, pyqtSignal, QMutex
@@ -17,6 +18,11 @@ logger = logging.getLogger(__name__)
 _CUSTOM_ZERO_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
     "config", "custom_zero.json"
+)
+
+_PHOTO_POSITION_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "config", "photo_position.json"
 )
 
 
@@ -254,6 +260,92 @@ class MotorManager:
 
         t = threading.Thread(target=_run, daemon=True)
         t.start()
+
+    # ---- 示教式拍照位 ----
+    # 背景：历史代码把拍照位硬编码为「其他关节 0° + J5 90°」，实测相机朝上看不到桌面；
+    # 改为示教：手动摆好姿态 → record_photo_position() 记录全部关节角 →
+    # go_to_photo_position() 精确复现，避免猜测角度。
+
+    def get_current_joints(self) -> Dict[int, float]:
+        """读取当前所有已连接关节的角度（关节坐标系，度）"""
+        joints: Dict[int, float] = {}
+        for motor_id in self.connected_motor_ids:
+            try:
+                pos_motor = self.motors[motor_id].read_parameters.get_position()
+                joints[motor_id] = self._motor_deg_to_joint_deg(motor_id, pos_motor)
+            except Exception as e:
+                logger.warning(f"读取关节 {motor_id} 位置失败: {e}")
+        return joints
+
+    def _load_photo_position(self) -> dict:
+        try:
+            with open(_PHOTO_POSITION_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_photo_position(self, data: dict):
+        try:
+            os.makedirs(os.path.dirname(_PHOTO_POSITION_PATH), exist_ok=True)
+            with open(_PHOTO_POSITION_PATH, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=1)
+        except Exception as e:
+            logger.warning(f"保存拍照位失败: {e}")
+
+    def record_photo_position(self) -> Dict[int, float]:
+        """把当前姿态记录为拍照位（关节角），持久化到 config/photo_position.json"""
+        joints = self.get_current_joints()
+        if not joints:
+            raise RuntimeError("无法读取当前关节角度，请确认电机已连接")
+        data = self._load_photo_position()
+        data["joints"] = {str(k): round(float(v), 2) for k, v in joints.items()}
+        self._save_photo_position(data)
+        logger.info(f"拍照位已记录: {data['joints']}")
+        return joints
+
+    def has_photo_position(self) -> bool:
+        joints = self._load_photo_position().get("joints")
+        return isinstance(joints, dict) and len(joints) > 0
+
+    def get_photo_position_targets(self) -> Optional[Dict[int, float]]:
+        """获取拍照位目标关节角；无示教记录时返回 None"""
+        joints = self._load_photo_position().get("joints")
+        if not (isinstance(joints, dict) and joints):
+            return None
+        return {int(k): float(v) for k, v in joints.items()}
+
+    def go_to_photo_position(self, speed: int = 100, delay: float = 3.0) -> Optional[Dict[int, float]]:
+        """
+        运动到拍照位（后台线程执行）。
+        - 有示教记录：其他关节先动，J5 最后动（保持防刮蹭顺序）；
+        - 无示教记录：回退为「全 0 + j5_deg」旧逻辑。
+        返回目标关节角字典（供调用方等待到位），失败返回 None。
+        """
+        targets = self.get_photo_position_targets()
+        if targets is None:
+            j5 = float(self._load_photo_position().get("j5_deg", 0.0))
+            self.go_to_custom_zero_sequential(speed=speed, last_joint=5,
+                                              extra_offsets={5: j5}, delay=delay)
+            return {mid: 0.0 for mid in self.connected_motor_ids} | {5: j5}
+
+        targets = {mid: t for mid, t in targets.items() if mid in self.connected_motor_ids}
+        if not targets:
+            return None
+        last_joint = 5 if 5 in targets else max(targets)
+        final_last = targets.pop(last_joint)
+        all_targets = {**targets, last_joint: final_last}
+
+        def _run():
+            import time
+            logger.info(f"拍照位 ① 其他关节先动: {targets}")
+            self.sync_move_positions(targets, speed=speed)
+            time.sleep(delay)
+            logger.info(f"拍照位 ② 关节{last_joint}跟上: {final_last}°")
+            self.sync_move_positions({last_joint: final_last}, speed=speed)
+
+        threading.Thread(target=_run, daemon=True).start()
+        return all_targets
 
     # ---- 电机控制 ----
 
