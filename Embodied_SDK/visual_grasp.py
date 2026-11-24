@@ -597,11 +597,25 @@ class VisualGraspSDK:
         tcp_z = grasp.get("tcp_offset_z", 0.0)
         
         # 4) 像素 → 基座坐标 (mm)
-        #    优先使用"平面交点"换算（depth_mode="平面交点"）：沿像素视线与
+        #    4.0) 落点偏差校正：手眼标定残差会造成系统性落点偏移，
+        #         用 grasp_pixel_offset=[du, dv]（像素）在换算前修正。
+        #         标定方法：抓一次，观察相机画面里"夹爪落点"相对"点击点"
+        #         的像素偏差，反向填入配置（落点偏左→du 为正，偏上→dv 为正）。
+        _vg = _read_vision_grasp_config()
+        _pix_off = _vg.get("grasp_pixel_offset", [0, 0])
+        try:
+            _du, _dv = float(_pix_off[0]), float(_pix_off[1])
+        except Exception:
+            _du, _dv = 0.0, 0.0
+        if (_du, _dv) != (0.0, 0.0):
+            print(f" [GraspPixel] 应用落点偏差校正: du={_du}, dv={_dv} 像素")
+            u, v = u + _du, v + _dv
+
+        #    4.1) 优先使用"平面交点"换算（depth_mode="平面交点"）：沿像素视线与
         #    抓取平面求交，相机高度/俯仰自由，拍照位视野更大且换算仍准确；
         #    未开启或失败时回退到固定深度换算（沿用原逻辑）。
         world = None
-        depth_mode = str(_read_vision_grasp_config().get("depth_mode", ""))
+        depth_mode = str(_vg.get("depth_mode", ""))
         if "平面" in depth_mode:
             world = _pixel_to_world_rayplane(u, v, calib, current_pose)
             if world is not None:
