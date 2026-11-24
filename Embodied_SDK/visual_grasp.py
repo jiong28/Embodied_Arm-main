@@ -610,7 +610,6 @@ class VisualGraspSDK:
         if (_du, _dv) != (0.0, 0.0):
             print(f" [GraspPixel] 应用落点偏差校正: du={_du}, dv={_dv} 像素")
             u, v = u + _du, v + _dv
-
         #    4.1) 优先使用"平面交点"换算（depth_mode="平面交点"）：沿像素视线与
         #    抓取平面求交，相机高度/俯仰自由，拍照位视野更大且换算仍准确；
         #    未开启或失败时回退到固定深度换算（沿用原逻辑）。
@@ -630,6 +629,19 @@ class VisualGraspSDK:
                 tcp_y=tcp_y,
                 tcp_z=tcp_z,
             )
+
+        # 4.05) 世界坐标落点校正：grasp_world_offset=[dx,dy]（mm，基座系）。
+        #       由实测"夹爪落点相对物体"的物理偏差反向填入：
+        #       落点比物体更远离基座→dx 为负；从机械臂正后方看落点在物体
+        #       左侧（+Y 侧）→dy 为负。
+        _w_off = _vg.get("grasp_world_offset", [0, 0])
+        try:
+            _dx, _dy = float(_w_off[0]), float(_w_off[1])
+        except Exception:
+            _dx, _dy = 0.0, 0.0
+        if (_dx, _dy) != (0.0, 0.0) and world is not None:
+            print(f" [GraspPixel] 应用世界坐标校正: dx={_dx}, dy={_dy} mm")
+            world = [world[0] + _dx, world[1] + _dy, world[2]]
 
         # 4.1) 安全检查：换算结果必须是桌面以上、臂展以内的有限值。
         #      历史问题：曾算出 z=-795mm 的目标点直接下发，IK 开根号负数 → 关节角 NaN。
