@@ -77,6 +77,70 @@ def _load_motor_config():
 SAFE_Z_MIN = 10.0        # mm 最低安全高度（桌面以上）
 SAFE_Z_MAX = 450.0       # mm 最高抓取高度
 WORKSPACE_MAX_R = 420.0  # mm 水平最大可达半径（L1+L2≈420.6，留余量）
+GRASP_PLANE_Z_DEFAULT = 20.0  # mm 默认抓取平面高度（物体放在桌面上的顶面近似高度）
+
+
+def _pixel_to_world_rayplane(u, v, calib, pose, plane_z=None):
+    """像素视线与抓取平面求交 → 世界坐标（不依赖固定深度）。
+
+    原理：由相机内参把像素还原成相机系中的射线方向，经手眼矩阵与
+    当前末端位姿变换到基座系，再与 z=plane_z 的抓取平面求交。
+
+    优势：相机高度/俯仰不再被"固定深度"锁死——拍照位可以摆得更
+    高（视野更大）、允许小幅前倾，换算依然准确。
+
+    返回 [x, y, z]（mm）；相机朝上/平行桌面导致射线打不到平面时
+    返回 None。
+    """
+    import numpy as _np
+    import json as _json
+
+    try:
+        if plane_z is None:
+            cfg = _read_vision_grasp_config()
+            plane_z = float(cfg.get("grasp_plane_z", GRASP_PLANE_Z_DEFAULT))
+
+        # 1) 相机内参 K（mono: calibration["one"]["camera_matrix"]）
+        K = _np.asarray(calib["one"]["camera_matrix"], dtype=float)
+        K_inv = _np.linalg.inv(K)
+
+        # 2) 手眼矩阵（相机 → 末端）
+        T_ce = _np.asarray(calib["eyeinhand"]["RT_camera2end"], dtype=float)
+        if T_ce.shape != (4, 4):
+            return None
+
+        # 3) 当前末端位姿 → 基座系变换（约定与 IK 预检查一致：
+        #    欧拉角 [yaw, pitch, roll] → Rz(yaw)Ry(pitch)Rx(roll)，单位度）
+        x, y, z, yaw_d, pitch_d, roll_d = [float(a) for a in pose[:6]]
+        yaw, pitch, roll = (_np.radians(yaw_d), _np.radians(pitch_d), _np.radians(roll_d))
+        Rz = _np.array([[_np.cos(yaw), -_np.sin(yaw), 0], [_np.sin(yaw), _np.cos(yaw), 0], [0, 0, 1]])
+        Ry = _np.array([[_np.cos(pitch), 0, _np.sin(pitch)], [0, 1, 0], [-_np.sin(pitch), 0, _np.cos(pitch)]])
+        Rx = _np.array([[1, 0, 0], [0, _np.cos(roll), -_np.sin(roll)], [0, _np.sin(roll), _np.cos(roll)]])
+        R_be = Rz @ Ry @ Rx
+        T_be = _np.eye(4)
+        T_be[:3, :3] = R_be
+        T_be[:3, 3] = [x, y, z]
+
+        # 4) 相机在基座系的位姿
+        T_bc = T_be @ T_ce
+        R_bc = T_bc[:3, :3]
+        cam_o = T_bc[:3, 3]
+
+        # 5) 像素 → 相机系射线方向 → 基座系方向
+        d_cam = K_inv @ _np.array([float(u), float(v), 1.0])
+        d_w = R_bc @ d_cam
+        if d_w[2] >= -1e-6:
+            return None  # 射线朝上或平行桌面，永远打不到下方平面
+
+        # 6) 与抓取平面求交
+        t = (float(plane_z) - cam_o[2]) / d_w[2]
+        if t <= 0:
+            return None
+        p = cam_o + t * d_w
+        return [float(p[0]), float(p[1]), float(p[2])]
+    except Exception as e:
+        print(f" [GraspPixel] 平面交点换算失败，回退固定深度: {e}")
+        return None
 
 
 def _load_calibration_safe(embodied_internal):
@@ -532,16 +596,26 @@ class VisualGraspSDK:
         tcp_y = grasp.get("tcp_offset_y", 0.0)
         tcp_z = grasp.get("tcp_offset_z", 0.0)
         
-        # 4) 像素 → 基座坐标 (mm)，复用 embodied_internal 中的通用转换逻辑
-        world = embodied_internal._convert_pixel_to_world_coords(
-            u,
-            v,
-            calib,
-            current_pose,
-            tcp_x=tcp_x,
-            tcp_y=tcp_y,
-            tcp_z=tcp_z,
-        )
+        # 4) 像素 → 基座坐标 (mm)
+        #    优先使用"平面交点"换算（depth_mode="平面交点"）：沿像素视线与
+        #    抓取平面求交，相机高度/俯仰自由，拍照位视野更大且换算仍准确；
+        #    未开启或失败时回退到固定深度换算（沿用原逻辑）。
+        world = None
+        depth_mode = str(_read_vision_grasp_config().get("depth_mode", ""))
+        if "平面" in depth_mode:
+            world = _pixel_to_world_rayplane(u, v, calib, current_pose)
+            if world is not None:
+                print(f" [GraspPixel] 平面交点换算: ({world[0]:.1f}, {world[1]:.1f}, {world[2]:.1f}) mm")
+        if world is None:
+            world = embodied_internal._convert_pixel_to_world_coords(
+                u,
+                v,
+                calib,
+                current_pose,
+                tcp_x=tcp_x,
+                tcp_y=tcp_y,
+                tcp_z=tcp_z,
+            )
 
         # 4.1) 安全检查：换算结果必须是桌面以上、臂展以内的有限值。
         #      历史问题：曾算出 z=-795mm 的目标点直接下发，IK 开根号负数 → 关节角 NaN。

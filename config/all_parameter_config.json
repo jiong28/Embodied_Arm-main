@@ -10,7 +10,7 @@
       "block_size": 5,
       "uniqueness": 10
     },
-    "depth_mode": "固定深度",
+    "depth_mode": "平面交点",
     "vision_detection": {
       "detection_type": "color",
       "hsv_lower": [
@@ -101,7 +101,8 @@
       ],
       "grasp_depth": 265.0
     },
-    "auto_pose_convention_fix": true
+    "auto_pose_convention_fix": true,
+    "grasp_plane_z": 20.0
   },
   "embodied_intelligence": {
     "grasp_params": {
