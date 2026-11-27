@@ -560,7 +560,7 @@ class CameraPanel(QWidget):
         self._instruction_worker = None
         self._voice_manager = None
         self._voice_active = False
-        self._auto_grasp_enabled = False
+        self._auto_grasp_enabled = True  # 默认开启：抓取到位后自动闭合夹爪（曾两次因默认关导致抓而不夹）
         self._adaptive_enabled = False
         self._current_grasp_box: dict | None = None  # 当前抓取目标的检测框信息
         self._detect_then_grasp_worker = None
@@ -654,10 +654,10 @@ class CameraPanel(QWidget):
         self.chk_adaptive.stateChanged.connect(self._on_adaptive_changed)
         toolbar.addWidget(self.chk_adaptive)
 
-        self.btn_auto_grasp = QPushButton("自动抓取: 关")
+        self.btn_auto_grasp = QPushButton("自动抓取: 开")
         self.btn_auto_grasp.setStyleSheet(
-            "QPushButton { background-color: #6b7280; color: white; font-weight: bold; padding: 6px 12px; border-radius: 4px; }"
-            "QPushButton:hover { background-color: #4b5563; }"
+            "QPushButton { background-color: #22c55e; color: white; font-weight: bold; padding: 6px 12px; border-radius: 4px; }"
+            "QPushButton:hover { background-color: #16a34a; }"
         )
         self.btn_auto_grasp.setToolTip("开启后：抓取到位 → 自动闭合夹爪 → 回到拍照位置")
         self.btn_auto_grasp.clicked.connect(self._on_toggle_auto_grasp)
@@ -1036,6 +1036,14 @@ class CameraPanel(QWidget):
         self.btn_grasp.setText("执行抓取")
         self._reopen_camera()
         if ok:
+            # SDK 侧发生了"夹回到可达半径"等自动修正时，把提示带到界面日志
+            try:
+                sdk = getattr(self._vision_manager, "_vision_sdk", None) if self._vision_manager else None
+                warn = getattr(sdk, "last_warning", None) if sdk is not None else None
+                if warn:
+                    self.log_message.emit("warn", f"⚠️ {warn}")
+            except Exception:
+                pass
             if self._auto_grasp_enabled and self._claw and self._claw.is_connected:
                 # 自动抓取模式：闭合夹爪 → 回拍照位置 → 完成后恢复语音
                 angle = self._get_effective_angle()
@@ -2224,10 +2232,18 @@ class CameraPanel(QWidget):
             worker.error.connect(self._on_grasp_error)
             worker.start()
         else:
-            # 没有精确匹配，抓取第一个物体
-            self.log_message.emit("info", f"未精确匹配'{target_text}'，抓取第一个物体")
-            self._display_detection_boxes(boxes)
-            self._auto_grasp_first(boxes)
+            # 没有匹配到目标。若指令指定了颜色等特征，乱抓第一个物体大概率抓错，改为中止
+            import re as _re
+            _specified = bool(_re.search(r'红|蓝|绿|黄|白|黑|紫|橙|粉', target_text))
+            names = "、".join(b["name"] for b in boxes)
+            if _specified:
+                self.log_message.emit("error", f"未找到'{target_text}'（当前可见: {names}），已取消抓取")
+                self._speak_if_voice("没有找到指定的物品")
+                self._reset_instruction_ui()
+            else:
+                self.log_message.emit("info", f"未精确匹配'{target_text}'，抓取第一个物体")
+                self._display_detection_boxes(boxes)
+                self._auto_grasp_first(boxes)
 
     def _execute_vision_instruction(self, instruction: str):
         """执行视觉问答指令：LLM 描述 + 检测标框"""
@@ -2377,7 +2393,12 @@ class CameraPanel(QWidget):
         return None
 
     def _find_box_by_name(self, boxes: list, name: str) -> Optional[dict]:
-        """在检测结果中按名称模糊匹配（忽略标点）"""
+        """在检测结果中按名称模糊匹配（忽略标点 + 颜色词 + 二字组相似度）
+
+        例：指令"红色物品" 应匹配检测名"红色立方体"。
+        旧逻辑把连续汉字当整词导致永远匹配不上，已改为四级匹配：
+        ①子串 ②颜色词 ③整词交集 ④二字组(bigram)相似度
+        """
         import re
         if not name:
             return None
@@ -2387,18 +2408,44 @@ class CameraPanel(QWidget):
         if not name_clean:
             return None
 
-        # 精确匹配（含子串）
+        # ① 精确匹配（含子串）
         for box in boxes:
             box_clean = clean(box["name"])
             if name_clean in box_clean or box_clean in name_clean:
                 return box
 
-        # 关键词匹配
+        # ② 颜色词匹配："红色物品" → 含"红"的检测框
+        colors = ["红色", "蓝色", "绿色", "黄色", "白色", "黑色",
+                  "紫色", "橙色", "粉色", "红", "蓝", "绿", "黄", "白", "黑", "紫", "橙", "粉"]
+        q_colors = {c for c in colors if c in name_clean}
+        if q_colors:
+            for box in boxes:
+                box_clean = clean(box["name"])
+                if any(c in box_clean for c in q_colors):
+                    return box
+
+        # ③ 关键词匹配（整词）
         for box in boxes:
             box_words = set(re.findall(r'[一-鿿]+|[a-zA-Z]+', clean(box["name"])))
             query_words = set(re.findall(r'[一-鿿]+|[a-zA-Z]+', name_clean))
             if box_words & query_words:
                 return box
+
+        # ④ 二字组（bigram）相似匹配："红色物品"∩"红色立方体" → {"红色"}
+        def bigrams(s: str) -> set:
+            s = clean(s)
+            return {s[i:i + 2] for i in range(len(s) - 1)} if len(s) > 1 else {s}
+        qb = bigrams(name_clean)
+        best_box, best_score = None, 0.0
+        for box in boxes:
+            bb = bigrams(box["name"])
+            inter = qb & bb
+            if inter:
+                score = len(inter) / max(1, min(len(qb), len(bb)))
+                if score > best_score:
+                    best_score, best_box = score, box
+        if best_box and best_score >= 0.25:
+            return best_box
 
         return None
 

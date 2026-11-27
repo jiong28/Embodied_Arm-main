@@ -108,9 +108,13 @@
       0
     ],
     "grasp_world_offset": [
-      0,
-      0
-    ]
+      -70,
+      -20
+    ],
+    "auto_clamp_range": true,
+    "grasp_r_min": 215.0,
+    "grasp_r_max": 395.0,
+    "grasp_clamp_max": 30.0
   },
   "embodied_intelligence": {
     "grasp_params": {

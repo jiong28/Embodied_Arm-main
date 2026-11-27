@@ -360,8 +360,19 @@ def _check_ik(kin, x, y, z, yaw, pitch, roll):
         if excess < best_excess:
             best_excess, best_sol, best_detail = excess, s, detail_dict
     detail = "，".join(f"J{j} 超限 {v:.0f}°" for j, v in sorted(best_detail.items()))
+    # 附带可操作建议：桌面(z≈20mm)可达水平半径约 210~410mm，太近(J3弯不下去)或太远都不可达
+    r_hint = ""
+    try:
+        import math as _math
+        _r = _math.hypot(float(x), float(y))
+        if _r < 210:
+            r_hint = f"；目标水平半径 {_r:.0f}mm 过近，请把物体向远离底座方向移到 220mm 以外"
+        elif _r > 410:
+            r_hint = f"；目标水平半径 {_r:.0f}mm 过远，请把物体向底座方向移近"
+    except Exception:
+        pass
     return False, (
-        f"IK 解全部超出关节限位（最接近解 {np.round(best_sol, 1).tolist()}：{detail}）"
+        f"IK 解全部超出关节限位（最接近解 {np.round(best_sol, 1).tolist()}：{detail}）{r_hint}"
     ), None
 
 
@@ -683,29 +694,59 @@ class VisualGraspSDK:
         pitch = grasp.get("pitch", 0.0)
         roll = grasp.get("roll", 180.0)
 
-        pos = [float(x_w), float(y_w), float(z_w)]
-        ori = [float(yaw), float(pitch), float(roll)]
-
-        # 5.5) IK 可达性预检查：在真正运动前拦截不可达点，给出明确原因与建议，
-        #      避免 c_a_p 只返回笼统的“逆运动学无解”而无从排查。
+        # 5.4) IK 可达性预检查 + 自动夹回（扩大可抓范围）
+        #      硬件限制 J3≤35° → 桌面最近可达半径约 205mm；臂展上限约 410mm。
+        #      5.4.0) 先按原始点检查：可达就直接抓，绝不改动可达点（避免引入额外偏差）
+        #      5.4.1) 原始点无解时，沿径向投影到最近的可行半径再试；偏移 ≤ grasp_clamp_max
+        #              （默认 30mm）时夹爪通常仍能夹住 40mm 左右的物体，比直接失败更实用。
+        #      可在 all_parameter_config.json 关闭：auto_clamp_range=false
+        self.last_warning = None
         kin = _get_kinematics()
+        reachable, ik_msg, _sol = True, "", None
         if kin is not None:
             reachable, ik_msg, _sol = _check_ik(kin, x_w, y_w, z_w, yaw, pitch, roll)
             if not reachable:
-                r_now = (x_w ** 2 + y_w ** 2) ** 0.5
-                self.last_error = (
-                    f"目标点不可达 ({x_w:.1f}, {y_w:.1f}, {z_w:.1f})mm，"
-                    f"水平半径 {r_now:.0f}mm：{ik_msg}"
-                )
-                print(f" [GraspPixel] {self.last_error}")
-                print(" [GraspPixel] 可能原因：①物体离基座过近（桌面抓取最小可达半径约 210mm）"
-                      "或过低；②手眼标定偏差使换算点落到近处死区。")
-                print(" [GraspPixel] 建议：把物体放远至半径≥210mm；若同一物体始终被算到近处，"
-                      "请重做手眼标定。")
-                return False
-            else:
-                print(f" [GraspPixel] IK 预检查通过: {np.round(_sol, 1).tolist()}")
+                _r_now = (x_w ** 2 + y_w ** 2) ** 0.5
+                _r_min = float(_vg.get("grasp_r_min", 215.0))
+                _r_max = float(_vg.get("grasp_r_max", 395.0))
+                _clamp_max = float(_vg.get("grasp_clamp_max", 30.0))
+                _r_clamped = min(max(_r_now, _r_min), _r_max)
+                _shift = abs(_r_clamped - _r_now)
+                if (_vg.get("auto_clamp_range", True) and 0.5 < _shift <= _clamp_max
+                        and _r_now > 1.0):
+                    _scale = _r_clamped / _r_now
+                    _nx, _ny = x_w * _scale, y_w * _scale
+                    print(f" [GraspPixel] 目标半径 {_r_now:.0f}mm 无解，"
+                          f"夹回至 {_r_clamped:.0f}mm 重试（偏移 {_shift:.0f}mm）")
+                    _ok2, _msg2, _sol2 = _check_ik(kin, _nx, _ny, z_w, yaw, pitch, roll)
+                    if _ok2:
+                        x_w, y_w = _nx, _ny
+                        reachable, _sol = True, _sol2
+                        self.last_warning = (
+                            f"物体略超出可达范围（半径 {_r_now:.0f}mm），已按最近可达点"
+                            f"（{_r_clamped:.0f}mm，偏移 {_shift:.0f}mm）抓取"
+                        )
+                        print(f" [GraspPixel] ⚠️ {self.last_warning}")
+                    else:
+                        ik_msg = _msg2
 
+        if not reachable:
+            r_now = (x_w ** 2 + y_w ** 2) ** 0.5
+            self.last_error = (
+                f"目标点不可达 ({x_w:.1f}, {y_w:.1f}, {z_w:.1f})mm，"
+                f"水平半径 {r_now:.0f}mm：{ik_msg}"
+            )
+            print(f" [GraspPixel] {self.last_error}")
+            print(" [GraspPixel] 可能原因：①物体离基座过近（桌面抓取最小可达半径约 210mm）"
+                  "或过低；②手眼标定偏差使换算点落到近处死区。")
+            print(" [GraspPixel] 建议：把物体放远至半径≥210mm；若同一物体始终被算到近处，"
+                  "请重做手眼标定。")
+            return False
+        if kin is not None and _sol is not None:
+            print(f" [GraspPixel] IK 预检查通过: {np.round(_sol, 1).tolist()}")
+
+        pos = [float(x_w), float(y_w), float(z_w)]
+        ori = [float(yaw), float(pitch), float(roll)]
         print(f" [GraspPixel] 执行抓取: Pos={pos}, Ori={ori}")
 
         # 6) 调用已有的 c_a_p（末端位姿控制）执行抓取运动
